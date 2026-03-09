@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        name: "Checkout repository"
+
+      - uses: erlef/setup-beam@v1
+        name: "Setup Elixir"
+        with:
+          otp-version: '28.3.2'
+          elixir-version: '1.19.5'
+
+      - uses: goto-bus-stop/setup-zig@v2
+        name: "Setup Zig"
+        with:
+          version: 0.15.2
+
+      - name: "Install xz"
+        run: sudo apt-get -y install xz-utils
+
+      - name: "Get dependencies"
+        run: mix do local.rebar --force, local.hex --force, deps.get
+
+      - name: "Build release"
+        run: MIX_ENV=prod mix release edid_cli
+
+      - name: "Extract version from mix.exs"
+        id: extract_version
+        run: |
+          VERSION=$(grep '@version' mix.exs | sed -n 's/.*@version "\([^"]*\)".*/\1/p')
+          echo "mix_version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: "Extract version from tag"
+        id: extract_tag_version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          TAG_VERSION=${TAG#v}
+          echo "tag_version=$TAG_VERSION" >> $GITHUB_OUTPUT
+
+      - name: "Validate version match"
+        run: |
+          MIX_VERSION=${{ steps.extract_version.outputs.mix_version }}
+          TAG_VERSION=${{ steps.extract_tag_version.outputs.tag_version }}
+          if [ "$MIX_VERSION" != "$TAG_VERSION" ]; then
+            echo "Error: Version mismatch!"
+            echo "mix.exs version: $MIX_VERSION"
+            echo "Tag version: $TAG_VERSION"
+            exit 1
+          fi
+          echo "Versions match: $MIX_VERSION"
+
+      - name: "Validate changelog exists"
+        run: |
+          VERSION=${{ steps.extract_version.outputs.mix_version }}
+          CHANGELOG_FILE="CHANGELOG/CHANGELOG-${VERSION}.md"
+          if [ ! -f "$CHANGELOG_FILE" ]; then
+            echo "Error: Changelog not found: $CHANGELOG_FILE"
+            exit 1
+          fi
+          echo "Changelog found: $CHANGELOG_FILE"
+
+      - name: "Read changelog"
+        id: read_changelog
+        uses: juliangruber/read-file-action@v1
+        with:
+          path: ./CHANGELOG/CHANGELOG-${{ steps.extract_version.outputs.mix_version }}.md
+
+      - name: "Upload binaries to release"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref }}
+          name: Edid Generator CLI v${{ steps.extract_version.outputs.mix_version }}
+          body: ${{ steps.read_changelog.outputs.content }}
+          files: burrito_out/edid_cli_*
+          draft: false
+          prerelease: false
